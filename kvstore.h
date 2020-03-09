@@ -1,22 +1,24 @@
 #pragma once
 
 #include "kvstore_api.h"
+#include "skiplist.h"
+#include <memory>
 
 class KVStore : public KVStoreAPI {
-	// You can add your implementation here
-private:
+   private:
+    bool verbose;
+    std::unique_ptr<SkipList<uint64_t, std::string>> memTable;
 
-public:
-	KVStore(const std::string &dir);
+   public:
+    KVStore(const std::string &dir);
 
-	~KVStore();
+    ~KVStore();
 
-	void put(uint64_t key, const std::string &s) override;
+    void put(uint64_t key, const std::string &s) override;
 
-	std::string get(uint64_t key) override;
+    std::string get(uint64_t key) override;
 
-	bool del(uint64_t key) override;
+    bool del(uint64_t key) override;
 
-	void reset() override;
-
+    void reset() override;
 };
