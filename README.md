@@ -27,3 +27,31 @@ We will use all files with `.cc`, `.cpp`, `.cxx` suffixes to build correctness a
 For the test files, of course you could modify it to debug your programs. But remember to change it back when you are testing.
 
 Good luck :)
+
+## SS Table Structure
+
+The SS Table, as a binary file, is composed of three parts: The data segment(including only an array of data entries), the index table part and meta data part.  
+The meta data consists of a `uint64_t` offest indicating the index of offset table.
+
+```text
+Data Entry
++----------------+
+|key|length|value|
++----------------+
+length: the length of string value (8 bytes)
+
+Data Segment:
++-----------------------------+
+|Data Entry 1|...|Data Entry n|
++-----------------------------+
+
+Index table:
++-----------------------------+
+|key1|offset1|key2|offest2|...|
++-----------------------------+
+
+Meta data:
++---------------------+
+|offset of index table|
++---------------------+
+```

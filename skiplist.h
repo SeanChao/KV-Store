@@ -4,6 +4,7 @@
 
 #ifndef SKIPLIST_H
 #define SKIPLIST_H
+#include "common.h"
 template <typename Key, typename Value>
 class SkipList {
    public:
@@ -24,8 +25,14 @@ class SkipList {
     SkipList();
     bool put(Key key, Value value);
     Value* get(Key key) const;
-    bool remove(Key key);
-
+    // removes an element according to the key, returns whether the element
+    // exists. Backups a copy of the value if passing a shared_ptr
+    bool remove(Key key, std::shared_ptr<Value> v = nullptr);
+    // return an array of Nodes, including Key and Value
+    std::shared_ptr<Node> exportData();
+    // if the node is neither a head nor a tail and it's not nullptr, it's valid
+    bool valid(std::shared_ptr<typename SkipList<Key, Value>::Node>) const;
+    
     template <typename X, typename Y>
     friend std::ostream& operator<<(std::ostream& os, const SkipList<X, Y>& l);
     bool test() const;
@@ -39,9 +46,6 @@ class SkipList {
     std::shared_ptr<Node> head;
     std::shared_ptr<Node> tail;
     unsigned level;
-
-    // if the node is neither a head nor a tail and it's not nullptr, it's valid
-    bool valid(std::shared_ptr<typename SkipList<Key, Value>::Node>) const;
 };
 
 template <typename Key, typename Value>
@@ -122,7 +126,6 @@ bool SkipList<Key, Value>::put(Key key, Value value) {
         ptr->succ->pred = growNode;
         ptr->succ = growNode;
         newNode->above = growNode;
-
         newNode = growNode;
     }
     return true;
@@ -136,9 +139,10 @@ Value* SkipList<Key, Value>::get(Key key) const {
 }
 
 template <typename Key, typename Value>
-bool SkipList<Key, Value>::remove(Key key) {
+bool SkipList<Key, Value>::remove(Key key, std::shared_ptr<Value> backupVal) {
     std::shared_ptr<Node> ptr = skipSearch(key);
     if (!valid(ptr) || ptr->key != key) return false;
+    if (backupVal) *backupVal = ptr->val;
     while (ptr) {
         ptr->pred->succ = ptr->succ;
         ptr->succ->pred = ptr->pred;
@@ -180,7 +184,7 @@ SkipList<Key, Value>::skipSearch(Key key) const {
     std::shared_ptr<Node> levelHead = head;  // marks the head of current level
     std::vector<Key> path;
     while (temp) {
-        while (temp->succ && temp->key <= key || temp == levelHead) {
+        while ((temp->succ && temp->key <= key) || temp == levelHead) {
             temp = temp->succ;
             path.push_back(temp->key);
         }
@@ -220,6 +224,14 @@ template <typename Key, typename Value>
 bool SkipList<Key, Value>::valid(
     std::shared_ptr<typename SkipList<Key, Value>::Node> node) const {
     return node && (node->pred) && (node->succ);
+}
+
+template <typename Key, typename Value>
+std::shared_ptr<typename SkipList<Key, Value>::Node>
+SkipList<Key, Value>::exportData() {
+    std::shared_ptr<Node> tmp = head;
+    while (tmp->below) tmp = tmp->below;
+    return tmp;
 }
 
 #endif  // SKIPLIST_H

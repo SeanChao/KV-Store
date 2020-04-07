@@ -1,3 +1,9 @@
 correctness
 persistence
 *.o
+
+# vscode
+.build
+.vscode
+*.out
+tmp.*
