@@ -28,7 +28,30 @@ For the test files, of course you could modify it to debug your programs. But re
 
 Good luck :)
 
-## SS Table Structure
+## Compile
+
+The program should be compiled with `g++` >= 9 with built-in `filesystem` support.
+
+## SS Table
+
+### Naming Convention and Hierarchy
+
+The SS Tables are stored under given directory. With hierarchy and naming style given below.
+
+```tree
+.
+├── level-0
+│   |── sstable-0
+│   └── sstable-1
+└── level-1
+    |── sstable-0
+    |── sstable-1
+    |── sstable-2
+    └── sstable-3
+...
+```
+
+### Data Structure
 
 The SS Table, as a binary file, is composed of three parts: The data segment(including only an array of data entries), the index table part and meta data part.  
 The meta data consists of a `uint64_t` offest indicating the index of offset table.

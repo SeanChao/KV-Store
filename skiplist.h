@@ -24,15 +24,19 @@ class SkipList {
 
     SkipList();
     bool put(Key key, Value value);
+    
     Value* get(Key key) const;
+    
     // removes an element according to the key, returns whether the element
     // exists. Backups a copy of the value if passing a shared_ptr
     bool remove(Key key, std::shared_ptr<Value> v = nullptr);
+    
     // return an array of Nodes, including Key and Value
     std::shared_ptr<Node> exportData();
+    
     // if the node is neither a head nor a tail and it's not nullptr, it's valid
     bool valid(std::shared_ptr<typename SkipList<Key, Value>::Node>) const;
-    
+
     template <typename X, typename Y>
     friend std::ostream& operator<<(std::ostream& os, const SkipList<X, Y>& l);
     bool test() const;
