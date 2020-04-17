@@ -7,3 +7,8 @@ persistence
 .vscode
 *.out
 tmp.*
+
+# data
+data/
+debug/
+*.log

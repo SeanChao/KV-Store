@@ -58,10 +58,11 @@ The meta data consists of a `uint64_t` offest indicating the index of offset tab
 
 ```text
 Data Entry
-+----------------+
-|key|length|value|
-+----------------+
++--------------------------+
+|key|timestamp|length|value|
++--------------------------+
 length: the length of string value (8 bytes)
+timestamp: 8 bytes of time_t indicating the time the entry was inserted
 
 Data Segment:
 +-----------------------------+

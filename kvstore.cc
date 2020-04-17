@@ -20,28 +20,27 @@ KVStore::KVStore(const std::string &dir)
     loadSsTable();
 }
 
-KVStore::~KVStore() {
-    std::cout << "call destructor" << std::endl;
-    memTable.release();
-}
+KVStore::~KVStore() { memTable.release(); }
 
 /**
  * Insert/Update the key-value pair.
  * No return values for simplicity.
  */
 void KVStore::put(uint64_t key, const std::string &s) {
+    // std::clog << ">> put " << key << " " << std::string(s, 0, 50) <<
+    // std::endl;
     memTable->put(key, s);
     memTableSize += getDataSize(s.length());
     if (verbose) {
-        std::cerr << "put " << key << '\t' << s << "  done.\n";
-        std::cerr << *memTable << '\n';
+        // std::clog << "put " << key << '\t' << s << "  done.\n";
+        // std::clog << *memTable << '\n';
     }
     // if the size memTable reaches the threshold, then calls buildSsTable and
     // resets memTable
     if (this->memTableSize >= MEM_TABLE_SIZE_MAX) {
         convertMemTable();
         resetMemTable();
-        // std::cout << *memTable << std::endl;
+        // std::clog << *memTable << std::endl;
     }
 }
 
@@ -52,32 +51,29 @@ void KVStore::put(uint64_t key, const std::string &s) {
  * Looks for key in memTable first, and then in SsTables
  */
 std::string KVStore::get(uint64_t key) {
-    // if (verbose) std::cerr << "try get " << key;
+    // if (verbose) std::clog << "try get " << key;
     // looks for key in memTable
     std::string *strPointer = memTable->get(key);
-    if (verbose && strPointer)
-        std::cerr << " -> " << *strPointer << '\n';
-    else if (verbose)
-        std::cerr << " NOT FOUND in memTable.\n";
+    if (verbose && strPointer) std::clog << " -> " << *strPointer << '\n';
     if (strPointer) return *strPointer;
+    // std::clog << "NOT FOUND in memTable.\n";
     // looks for key in SsTables using indexTable
     uint64_t offset = 0;
-    // uint64_t len = 0;
     bool found = false;
     int count = 0;
     for (auto table : indexTableList) {
         if (found) break;
-        // std::cout << "looks for key " << key << " in indexTable" <<
+        // std::clog << "looks for key " << key << " in indexTable" <<
         // std::endl; binary searches in an index table
         int l = 0;
         int r = table.size() - 1;
         while (l <= r) {
             int mid = (l + r) / 2;
-            // std::cout << "mid: " << mid << " l" << l << " r" << r <<
+            // std::clog << "mid: " << mid << " l" << l << " r" << r <<
             // std::endl;
             if (table[mid].key == key) {
-                std::cout << "found " << table[mid].key << "@"
-                          << table[mid].offset << std::endl;
+                // std::clog << "found " << table[mid].key << "@"
+                //           << table[mid].offset << std::endl;
                 offset = table[mid].offset;
                 found = true;
                 break;
@@ -89,13 +85,16 @@ std::string KVStore::get(uint64_t key) {
         }
         if (!found) count++;
     }
+    // calculate coresponding ssTable level and id
+    // int back = count;
     int level = 0;
-    while (
-        !(count >= (1 << (level + 1)) - 2 && count <= (1 << (level + 2)) - 3)) {
+    while (count - fileNum[level] >= 0) {
+        count -= fileNum[level];
         level++;
     }
-    int fileId = count - ((1 << (level + 1)) - 2);
-    std::cout << "level: " << level << " num: " << fileId << std::endl;
+    int fileId = count;
+    // std::clog << key << " at level: " << level << " id: " << fileId
+    //   << std::endl;
     if (found) {
         // reads value on disk according to offest
         return readPair(resolvePath(level, fileId), offset);
@@ -107,19 +106,26 @@ std::string KVStore::get(uint64_t key) {
  * Delete the given key-value pair if it exists.
  * Returns false iff the key is not found.
  *
- * TODO: support ss table
+ * First, looks up for key in memTable and then in ssTable.
+ * If the entry is in memTable, just remove it from memTable. If the entry is in
+ * an ssTable, add an entry with the same key but with empty string to lazy
+ * delete the entry.
+ * If it's not found, the function returns false.
  */
 bool KVStore::del(uint64_t key) {
     if (verbose) {
-        std::cerr << "remove " << key << "\n";
-        std::cerr << *memTable;
+        // std::clog << "remove " << key << "\n";
+        // std::clog << *memTable;
     }
     std::shared_ptr<std::string> strVal(new std::string);
     if (memTable->remove(key, strVal)) {
         this->memTableSize -= getDataSize((*strVal).length());
         return true;
-    } else
-        return false;
+    } else if (get(key) == "") {
+        // add an empty string in ssTable
+        put(key, "");
+    }
+    return false;
 }
 
 /**
@@ -127,54 +133,69 @@ bool KVStore::del(uint64_t key) {
  * including memtable and all sstables files.
  */
 void KVStore::reset() {
-    // TODO: reset
+    // reset memTable
+    resetMemTable();
+    // Removes all existing ss-table
+    int lv = 0;
+    std::string level = resolvePath(lv);
+    while (std::filesystem::exists(level)) {
+        // std::clog << "remove " << level << std::endl;
+        uintmax_t count = std::filesystem::remove_all(level);
+        // std::clog << "removed " << count << " file or directories" <<
+        // std::endl;
+        level = resolvePath(++lv);
+        // std::clog << level << std::endl;
+    }
+    level = resolvePath(-1);
+    if (std::filesystem::exists(level)) std::filesystem::remove_all(level);
+    indexTableList.clear();
+    fileNum.clear();
+    fileNum.push_back(0);
 }
 
 void KVStore::convertMemTable() {
-    std::cout << "call convertMemTable, writing to " << this->dir << std::endl;
-    // if (memTableSize < MEM_TABLE_SIZE_MAX) return;
-    // get pointer to the head of linked list from SkipList. Beware that the
-    // last non-nullptr pointer would be the tail, which contains no meaningful
-    // data
+    // std::clog << "call convertMemTable, writing to " << this->dir <<
+    // std::endl; if (memTableSize < MEM_TABLE_SIZE_MAX) return; get pointer to
+    // the head of linked list from SkipList. Beware that the last non-nullptr
+    // pointer would be the tail, which contains no meaningful data
     std::shared_ptr<typename SkipList<uint64_t, std::string>::Node> p =
         memTable->exportData();
-    // while ((p = p->succ) && memTable->valid(p)) std::cout << p->key << "\n";
-    // TODO: IO exception
-    std::filesystem::path root(this->dir);
-    std::filesystem::path lv("level-0");
-    std::string filename = "sstable-" + std::to_string(fileNum[level]);
-    std::filesystem::create_directories(root / lv);
-    std::fstream fs((root / lv / filename), std::ios::out | std::ios::binary);
+    // while ((p = p->succ) && memTable->valid(p)) std::clog << p->key << "\n";
+    std::string lv = resolvePath(0);
+    std::string filename = resolvePath(0, fileNum[0]);
+    std::filesystem::create_directories(lv);
+    std::fstream fs(filename, std::ios::out | std::ios::binary);
     // prepares the cache for index data
     std::vector<Index> indexTable;
     uint64_t offset = 0;
     // writes the data segment
     while ((p = p->succ) && memTable->valid(p)) {
-        // std::cout << "write key = " << p->key << std::endl;
+        // std::clog << "write key = " << p->key << std::endl;
         // convert to char * on demand
         uint64_t strLen = p->val.length();
-        fs.write(reinterpret_cast<char *>(&p->key), sizeof(p->key));
-        fs.write(reinterpret_cast<char *>(&strLen), sizeof(strLen));
-        fs.write(p->val.c_str(), strLen);  // write val
+        time_t writeTime = time(nullptr);
+        Entry e(p->key, writeTime, strLen, p->val);
+        writeEntry(fs, e);
         // caches index data
         indexTable.push_back(Index(p->key, offset));
-        offset += sizeof(p->key) + sizeof(strLen) + p->val.length();
+        offset += sizeof(p->key) + sizeof(writeTime) + sizeof(strLen) +
+                  p->val.length();
     }
     // writes index data to file
     for (auto i : indexTable) {
-        std::cout << "write key = " << i.key << " offset = " << i.offset
-                  << std::endl;
+        // std::clog << "write key: " << i.key << " offset: " << i.offset
+        //   << " tellp: " << fs.tellp() << std::endl;
         fs.write(reinterpret_cast<char *>(&i.key), sizeof(i.key));
         fs.write(reinterpret_cast<char *>(&i.offset), sizeof(i.offset));
     }
     // writes meta data
     // index of indexTable
-    std::cout << "Meta: offset = " << std::hex << "0x" << offset << std::dec
-              << std::endl;
+    // std::clog << "Meta: offset = " << std::hex << "0x" << offset << std::dec
+    //   << std::endl;
     fs.write(reinterpret_cast<char *>(&offset), sizeof(offset));
-    indexTableList.push_back(indexTable);
+    indexTableList.insert(indexTableList.begin() + fileNum[0], indexTable);
     fs.close();
-    std::cout << "build ss table done." << std::endl;
+    std::clog << "memTable -> " << filename << std::endl;
     // update state
     fileNum[0]++;
     // compaction if the number of files in level 0 is more than 2
@@ -183,100 +204,123 @@ void KVStore::convertMemTable() {
 
 void KVStore::loadSsTable() {
     // checks existing ss-table
-    std::filesystem::path root(this->dir);
     int lv = 0;
     int count = 0;
-    std::filesystem::path level(root / ("level-" + std::to_string(lv)));
+    std::string level = resolvePath(lv);
     while (std::filesystem::exists(level)) {
-        std::string filename = "sstable-" + std::to_string(count);
-        std::cerr << "see lv " << lv << std::endl;
-        while (std::filesystem::exists(level / filename)) {
-            std::cerr << "see file " << filename << std::endl;
+        // std::string filename = "sstable-" + std::to_string(count);
+        // std::clog << "see lv " << lv << std::endl;
+        std::string filename = resolvePath(lv, count);
+        if ((int)fileNum.size() < lv + 1) fileNum.push_back(0);
+        while (std::filesystem::exists(filename)) {
+            // std::clog << "see file " << filename << std::endl;
             // parse the file
-            std::string filepath = (level / filename).string();
-            readSsTable(filepath);
-            filename = "sstable-" + std::to_string(++count);
+            readSsTable(filename);
+            fileNum[lv]++;
+            filename = resolvePath(lv, ++count);
         }
         count = 0;
-        level = root / ("level-" + std::to_string(++lv));
+        level = resolvePath(++lv);
     }
 }
 
 void KVStore::readSsTable(std::string path) {
     // load index table into indexTableList
-    // std::filesystem::path ssDir(this->dir);
-    // std::string file("sstable-test.dat");
     std::ifstream fs(path, std::ios::binary);
-    std::cout << "read ss table from " << path << std::endl;
+    // std::clog << "read ss table from " << path << std::endl;
     // reads the offest of the begining of the index part
+    if (!fs.is_open()) {
+        // std::clog << "Error open file " << path << std::endl;
+    }
     fs.seekg(-8, std::ios::end);
     uint64_t offset = 0;
     fs.read(reinterpret_cast<char *>(&offset), sizeof(offset));
-    std::cout << "read: get offset of index table at " << std::hex << offset
-              << std::dec << std::endl;
+    // std::clog << "read: get offset of index table at " << std::hex << offset
+    //           << std::dec << std::endl;
     // reads keys and indices and saves them in indexTable
-    // auto endData = fs.seekg(-8, std::ios::end);
     fs.seekg(offset);
     std::vector<Index> indexTable;
     while (!fs.eof()) {
         uint64_t key = 0;
         uint64_t off = 0;
+        // int64_t time = 0;
         fs.read(reinterpret_cast<char *>(&key), sizeof(key));
+        // fs.read(reinterpret_cast<char *>(&time), sizeof(time));
         fs.read(reinterpret_cast<char *>(&off), sizeof(off));
         if (fs.gcount() == 0)
             break;  // if fs comes to meta data then break, this condition may
                     // fail if the meta data changes
-        std::cout << "read key: " << key << std::hex << " @0x" << off << " "
-                  << fs.gcount() << std::endl;
+        // std::clog << "read key: " << key << std::hex << " @0x" << off << " "
+        // << std::dec << fs.gcount() << std::endl;
         indexTable.push_back(Index(key, off));
     }
+    fs.close();
     // for(auto i: indexTable) {
-    //     std::cout << "key " << i.key << "offset "
+    //     std::clog << "key " << i.key << "offset "
     // }
-    indexTableList.push_back(indexTable);  // FIXME: insert to level 0
+    indexTableList.push_back(indexTable);
 }
 
 std::vector<Pair> KVStore::readSsTable(int level, int id) {
+    std::vector<Pair> table;
     std::string path = resolvePath(level, id);
     std::ifstream fs(path, std::ios::binary);
-    std::cout << "read ss table from " << path << std::endl;
+    // std::clog << "read ss table from " << path << std::endl;
+    if (!fs.is_open()) {
+        // std::clog << "error read sstable " << path << std::endl;
+        return table;
+    }
     fs.seekg(-8, std::ios::end);
     uint64_t offset = 0;
     fs.read(reinterpret_cast<char *>(&offset), sizeof(offset));
-    // std::cout << "read: offset of index table at " << std::hex << offset
+    // std::clog << "read: offset of index table at " << std::hex << offset
     //           << std::dec << std::endl;
 
-    std::vector<Pair> table;
     fs.seekg(std::ios::beg);
     while (fs.tellg() < (int64_t)offset) {
-        std::cout << "fs pos: " << fs.tellg() << std::endl;
+        // std::clog << "fs pos: " << fs.tellg() << std::endl;
         uint64_t key = 0;
-        fs.read(reinterpret_cast<char *>(&key), sizeof(key));
         uint64_t len = 0;
+        time_t time = 0;
+        fs.read(reinterpret_cast<char *>(&key), sizeof(key));
+        fs.read(reinterpret_cast<char *>(&time), sizeof(time));
         fs.read(reinterpret_cast<char *>(&len), sizeof(len));
         char *tmp = new char[len + 1];
         fs.read(tmp, len);
         tmp[len] = '\0';
         std::string val(tmp);
         delete[] tmp;
-        table.push_back(Pair(key, val));
+        table.push_back(Pair(key, time, val));
     }
-    for (auto i : table)
-        std::cout << "key " << i.key << "\tval " << i.val << std::endl;
+    fs.close();
+    // for (auto i : table)
+    // std::clog << "key " << i.key << "\tval " << std::string(i.val, 0, 50)
+    // << std::endl;
 
     return table;
 }
 
+void KVStore::writeEntry(std::fstream &fs, Entry &e) {
+    if (!fs.is_open()) {
+        // std::clog << "Error open file" << std::endl;
+        return;
+    }
+    fs.write(reinterpret_cast<char *>(&e.key), sizeof(e.key));
+    fs.write(reinterpret_cast<char *>(&e.timestamp), sizeof(e.timestamp));
+    fs.write(reinterpret_cast<char *>(&e.len), sizeof(e.len));
+    fs.write(e.str.c_str(), e.len);  // write val
+}
+
 std::string KVStore::resolvePath(int level, int id) const {
-    std::filesystem::path root(this->dir);
-    std::string lv = "level-" + std::to_string(level);
+    std::filesystem::path lv(resolvePath(level));
     std::string filename = "sstable-" + std::to_string(id);
-    return std::filesystem::path(root / lv / filename).string();
+    return std::filesystem::path(lv / filename).string();
 }
 
 std::string KVStore::resolvePath(int level) const {
     std::filesystem::path root(this->dir);
     std::string lv = "level-" + std::to_string(level);
+    if (level == -1) lv = "tmp";
     return std::filesystem::path(root / lv).string();
 }
 
@@ -285,19 +329,18 @@ std::string KVStore::resolvePath(Location &l) const {
 }
 
 std::string KVStore::readPair(std::string path, uint64_t offset) {
-    // std::filesystem::path ssDir(this->dir);
-    // std::string file("sstable-test.dat");
     std::ifstream fs(path, std::ios::binary);
     uint64_t len = 0;
-    fs.seekg(offset + 8);
+    // 16 = key + time
+    fs.seekg(offset + 16);
     fs.read(reinterpret_cast<char *>(&len), sizeof(len));
     char *tmp = new char[len + 1];
     fs.read(tmp, len);
+    fs.close();
     tmp[len] = '\0';
     std::string val(tmp);
     delete[] tmp;
-    std::cout << "read " << len << " byte: " << val << std::endl;
-    delete[] tmp;
+    // std::clog << "read " << len << " byte: " << val << std::endl;
     return val;
 }
 
@@ -310,15 +353,15 @@ void KVStore::resetMemTable() {
     memTableSize = 0;
 }
 
-void KVStore::writeSsTable(std::vector<Pair> table, Location loc) {
+void KVStore::writeSsTable(std::vector<Pair> table, Location loc, bool tmp) {
     std::string path = resolvePath(loc.level, loc.id);
     std::string folder = resolvePath(loc.level);
     if (!std::filesystem::exists(folder))
         std::filesystem::create_directories(folder);
     std::fstream fs(path, std::ios::out | std::ios::binary);
     if (!fs.is_open()) {
-        std::cout << "[writeSsTable] Failed to open sstable file " << path
-                  << std::endl;
+        // std::clog << "[writeSsTable] Failed to open sstable file " << path
+        // << std::endl;
         return;
     }
     // prepares the cache for index data
@@ -327,36 +370,36 @@ void KVStore::writeSsTable(std::vector<Pair> table, Location loc) {
     // writes the data segment
     for (auto &p : table) {
         uint64_t strLen = p.val.length();
-        fs.write(reinterpret_cast<char *>(&p.key), sizeof(p.key));
-        fs.write(reinterpret_cast<char *>(&strLen), sizeof(strLen));
-        fs.write(p.val.c_str(), strLen);  // write val
+        time_t writeTime = time(nullptr);
+        Entry e(p.key, writeTime, strLen, p.val);
+        writeEntry(fs, e);
         // caches index data
         indexTable.push_back(Index(p.key, offset));
-        offset += sizeof(p.key) + sizeof(strLen) + p.val.length();
+        offset +=
+            sizeof(p.key) + sizeof(writeTime) + sizeof(strLen) + p.val.length();
     }
     // writes index data to file
     for (auto i : indexTable) {
-        std::cout << "write key = " << i.key << " offset = " << i.offset
-                  << std::endl;
+        // std::clog << "write key = " << i.key << " offset = " << i.offset
+        // << std::endl;
         fs.write(reinterpret_cast<char *>(&i.key), sizeof(i.key));
         fs.write(reinterpret_cast<char *>(&i.offset), sizeof(i.offset));
     }
     // writes meta data
     // index of indexTable
-    std::cout << "Meta: offset = " << std::hex << "0x" << offset << std::dec
-              << std::endl;
+    // std::clog << "Meta: offset = " << std::hex << "0x" << offset << std::dec
+    // << std::endl;
     fs.write(reinterpret_cast<char *>(&offset), sizeof(offset));
     fs.close();
     // update state
     indexTableList.insert(indexTableList.begin() + getIndex(loc), indexTable);
     if ((int)fileNum.size() <= loc.level) fileNum.push_back(0);
-    fileNum[loc.level]++;
-
-    std::cout << "build ss table done." << std::endl;
+    if (loc.level >= 0) fileNum[loc.level]++;
+    std::clog << "write ss table done -> " << path << std::endl;
 }
 
 void KVStore::compaction(int level) {
-    std::cout << "run compaction on level " << level << std::endl;
+    std::clog << "run compaction on level " << level << std::endl;
     // range statistics
     int nextLv = level + 1;
     int nextLvPos = -1;        // index of insertion point of indexTable in next
@@ -373,7 +416,8 @@ void KVStore::compaction(int level) {
         uint64_t t2Max = indexTableList[2].back().key;
         min = std::min({t0Min, t1Min, t2Min});
         max = std::max({t0Max, t1Max, t2Max});
-        std::cerr << "[lv0]compaction range " << min << " " << max << std::endl;
+        // std::clog << "[lv0]compaction range " << min << " " << max <<
+        // std::endl;
         id.push_back(Location(0, 0));
         id.push_back(Location(0, 1));
         id.push_back(Location(0, 2));
@@ -390,15 +434,19 @@ void KVStore::compaction(int level) {
             id.push_back(Location(level, levelSizeLim(level) + i));
         }
     }
-    for (int i = 0; i < fileNum[nextLv]; i++) {
+    // looks for key range overlapped files
+    int delFiles = 0;
+    for (int i = 0; fileNum.size() > (size_t)nextLv && i < fileNum[nextLv];
+         i++) {
         int tabId = getIndex(nextLv, i);
         uint64_t tMin = indexTableList[tabId].front().key;
         uint64_t tMax = indexTableList[tabId].back().key;
         if (!(tMax < min || max < tMin)) {
-            // range overlaps
             id.push_back(Location(nextLv, i));
-            if (nextLvPos == -1) nextLvPos = i;
+            delFiles++;
+            // if (nextLvPos == -1) nextLvPos = i;
         }
+        if (tMax < min) nextLvPos = i + 1;
     }
     // merge
     std::vector<Pair> all;
@@ -407,32 +455,43 @@ void KVStore::compaction(int level) {
         std::vector<Pair> t = readSsTable(id[i].level, id[i].id);
         all = merge(all, t);
     }
-    std::cout << "Merged all data: " << std::endl;
-    for (auto &i : all)
-        std::cout << "key: " << i.key << " val: " << i.val << std::endl;
-    // update state: removes indexTable from memory and update fileNum
+    // std::clog << "Merged all data: " << std::endl;
+    // for (auto &i : all)
+    // std::clog << "k " << i.key << " v " << std::string(i.val, 0, 50)
+    // << std::endl;
+    // update state: removes indexTable from memory, updates fileNum
     for (int i = (int)id.size() - 1; i >= 0; i--) {
         indexTableList.erase(indexTableList.begin() + getIndex(id[i]));
         fileNum[id[i].level]--;
         if (!std::filesystem::remove(resolvePath(id[i])))
-            std::cout << "error deleting " << resolvePath(id[i]) << std::endl;
+            std::clog << "error deleting " << resolvePath(id[i]) << std::endl;
     }
     // slice merged data and write to disk
     // slice all data into id.size() pieces and writes them to disk
+    // program state is updated in call to writeSsTable
     uint64_t size = 0;
     std::vector<Pair> tmp;
     if (nextLvPos == -1) nextLvPos = 0;
+    // int newFile = 0;
+    // if (nextLvPos == -1 && fileNum[nextLv] > 0) {
+    //     nextLvPos =
+    //         all.front().key > indexTableList[getIndex(nextLv, 0)].front().key
+    //             ? fileNum[nextLv]
+    //             : 0;
+    // } else
+    //     nextLvPos = 0;
+    // renames all file in nextLv to avoid rename hazard
+    renameLevel(nextLv, 0);
     for (auto &i : all) {
         size += i.val.length() + DATA_CONST_SIZE;
         tmp.push_back(i);
-        if (size >= MEM_TABLE_SIZE_MAX) {
-            writeSsTable(tmp, Location(nextLv, nextLvPos));
+        if (size >= MEM_TABLE_SIZE_MAX || i.key == all.back().key) {
+            writeSsTable(tmp, Location(nextLv, nextLvPos++), true);
             size = 0;
-            nextLvPos++;
             tmp.clear();
         }
     }
-    // program state is updated in call to writeSsTable
+    renameLevel(nextLv, 1);
     // call compaction on next level if necessary
     if (fileNum[nextLv] > levelSizeLim(nextLv)) compaction(nextLv);
 }
@@ -443,8 +502,15 @@ std::vector<Pair> KVStore::merge(std::vector<Pair> a, std::vector<Pair> b) {
     while (i < a.size() && j < b.size()) {
         if (a[i].key < b[j].key)
             tmp.push_back(a[i++]);
-        else
+        else if (a[i].key > b[j].key)
             tmp.push_back(b[j++]);
+        else {
+            // two entries with the same key, keeps the one with newer timestamp
+            Pair p = a[i].time > b[j].time ? a[i] : b[j];
+            tmp.push_back(p);
+            i++;
+            j++;
+        }
     }
     while (i < a.size()) {
         tmp.push_back(a[i++]);
@@ -452,16 +518,43 @@ std::vector<Pair> KVStore::merge(std::vector<Pair> a, std::vector<Pair> b) {
     while (j < b.size()) {
         tmp.push_back(b[j++]);
     }
-    std::cout << "tmp merged: " << std::endl;
-    for (auto i : tmp) {
-        std::cout << i.key << " " << i.val << std::endl;
-    }
+    // std::clog << "tmp merged: " << std::endl;
+    // for (auto i : tmp) {
+    //     std::clog << i.key << " " << i.val << std::endl;
+    // }
     return tmp;
+}
+
+void KVStore::renameLevel(int level, int mode) {
+    if (mode == 0) {
+        int id = 0;
+        if (!std::filesystem::exists(resolvePath(-1)))
+            std::filesystem::create_directories(resolvePath(-1));
+        while (std::filesystem::exists(resolvePath(level, id))) {
+            std::filesystem::rename(resolvePath(level, id),
+                                    resolvePath(-1, id));
+            std::clog << "rename " << resolvePath(level, id) << "->"
+                      << resolvePath(-1, id) << std::endl;
+            id++;
+        }
+    } else if (mode == 1) {
+        int tmp = 0;
+        int id = 0;
+        while (std::filesystem::exists(resolvePath(-1, tmp))) {
+            while (std::filesystem::exists(resolvePath(level, id))) id++;
+            std::filesystem::rename(resolvePath(-1, tmp++),
+                                    resolvePath(level, id++));
+            std::clog << "rename " << resolvePath(-1, tmp - 1) << "->"
+                      << resolvePath(level, id - 1) << std::endl;
+        }
+    } else {
+        std::clog << "error no rename with mode " << mode << std::endl;
+    }
 }
 
 int KVStore::getIndex(int level, int id) const {
     int index = 0;
-    for (size_t i = 0; i < fileNum.size() && i < (size_t)level - 1; i++) {
+    for (size_t i = 0; i < fileNum.size() && i < (size_t)level; i++) {
         index += fileNum[i];
     }
     index += id;
