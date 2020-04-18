@@ -28,8 +28,8 @@ class KVStore : public KVStoreAPI {
     std::string dir;
     bool verbose = true;
 
-    // static const uint64_t MEM_TABLE_SIZE_MAX = 2 * 1024 * 1024;
     static const uint64_t MEM_TABLE_SIZE_MAX = 2 * 1024 * 1024;
+    // static const uint64_t MEM_TABLE_SIZE_MAX = 200;
 
     // Maintains the size of the ss-table to generate, an data entry is composed
     // of key (8 bytes), length of string (8 bytes), a timestamp (8 bytes) and
@@ -67,6 +67,11 @@ class KVStore : public KVStoreAPI {
     std::vector<Pair> readSsTable(int level, int id);
 
     void writeEntry(std::fstream &fs, Entry &e);
+
+    // Finds the given key in index tables and return the index of the table in
+    // index table list. Return value -1 indicates the key doesn't exist.
+    // Saves the offset of the entry in optional parameter offsetDst.
+    int findIndexedKey(uint64_t key, uint64_t *offsetDst = nullptr) const;
 
     // resolves the path of sstable x in level y
     std::string resolvePath(int level, int id) const;

@@ -138,7 +138,7 @@ bool SkipList<Key, Value>::put(Key key, Value value) {
 template <typename Key, typename Value>
 Value* SkipList<Key, Value>::get(Key key) const {
     std::shared_ptr<Node> temp = skipSearch(key);
-    if (temp && temp->key == key) return &temp->val;
+    if (valid(temp) && temp->key == key) return &temp->val;
     return nullptr;
 }
 

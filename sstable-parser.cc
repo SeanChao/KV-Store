@@ -11,7 +11,7 @@ std::string printTime(const time_t rawtime) {
     return std::string(buffer);
 }
 
-void readTable(std::string root, int level, int id) {
+void readTable(std::string root, int level, int id, uint64_t t_key = UINT64_MAX) {
     std::string file = root + '/' + "level-" + std::to_string(level) +
                        "/sstable-" + std::to_string(id);
     if (level == -1) file = root + '/' + "tmp/sstable-" + std::to_string(id);
@@ -39,14 +39,15 @@ void readTable(std::string root, int level, int id) {
         char *str = new char[len + 1];
         fs.read(str, len);
         str[len] = '\0';
+        if (t_key != UINT64_MAX && t_key != key) continue;
         std::cout << "<" << offest << "> " << printTime((time)) << "\t" << key
-                  << ": [" << len << "] " << std::string(str, 0, 60)
+                  << ": [" << len << "] " << std::string(str, 0, 40)
                   << std::endl;
     }
     fs.close();
 }
 
-void readAll(std::string root) {
+void readAll(std::string root, uint64_t key = UINT64_MAX) {
     // std::string level = "";
     int lv = 0;
     int count = 0;
@@ -56,7 +57,7 @@ void readAll(std::string root) {
         while (std::filesystem::exists(filename)) {
             std::cout << std::endl << "### " << filename << std::endl;
             // parse the file
-            readTable(root, lv, count);
+            readTable(root, lv, count, key);
             filename = level + "/sstable-" + std::to_string(++count);
         }
         count = 0;
@@ -68,7 +69,7 @@ void readAll(std::string root) {
         while (std::filesystem::exists(filename)) {
             std::cout << std::endl << "### " << filename << std::endl;
             // parse the file
-            readTable(root, -1, count);
+            readTable(root, -1, count, key);
             filename = root + "/tmp" + "/sstable-" + std::to_string(++count);
         }
     }
@@ -78,8 +79,12 @@ int main(int argc, char *argv[]) {
     if (argc <= 2) return 1;
     std::string mode(argv[1]);
     std::string root(argv[2]);
-    if (mode == "-a")
-        readAll(argv[2]);
+    if (mode == "-a") {
+        if (argc >= 4) readAll(argv[2], std::atoi(argv[3]));
+        else
+            readAll(argv[2]);
+    }
+
     else if (mode == "-t") {
         if (argc < 5) {
             std::cout << "Usage -t root lv id" << std::endl;

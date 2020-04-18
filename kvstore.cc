@@ -27,8 +27,7 @@ KVStore::~KVStore() { memTable.release(); }
  * No return values for simplicity.
  */
 void KVStore::put(uint64_t key, const std::string &s) {
-    // std::clog << ">> put " << key << " " << std::string(s, 0, 50) <<
-    // std::endl;
+    std::clog << "+ " << key << " " << std::string(s, 0, 50) << std::endl;
     memTable->put(key, s);
     memTableSize += getDataSize(s.length());
     if (verbose) {
@@ -51,40 +50,17 @@ void KVStore::put(uint64_t key, const std::string &s) {
  * Looks for key in memTable first, and then in SsTables
  */
 std::string KVStore::get(uint64_t key) {
-    // if (verbose) std::clog << "try get " << key;
+    std::clog << "? " << key << std::endl;
     // looks for key in memTable
     std::string *strPointer = memTable->get(key);
-    if (verbose && strPointer) std::clog << " -> " << *strPointer << '\n';
-    if (strPointer) return *strPointer;
-    // std::clog << "NOT FOUND in memTable.\n";
+    if (strPointer) {
+        std::clog << "\t[m]->" << std::string(*strPointer, 0, 40) << std::endl;
+        return *strPointer;
+    }
     // looks for key in SsTables using indexTable
     uint64_t offset = 0;
-    bool found = false;
-    int count = 0;
-    for (auto table : indexTableList) {
-        if (found) break;
-        // std::clog << "looks for key " << key << " in indexTable" <<
-        // std::endl; binary searches in an index table
-        int l = 0;
-        int r = table.size() - 1;
-        while (l <= r) {
-            int mid = (l + r) / 2;
-            // std::clog << "mid: " << mid << " l" << l << " r" << r <<
-            // std::endl;
-            if (table[mid].key == key) {
-                // std::clog << "found " << table[mid].key << "@"
-                //           << table[mid].offset << std::endl;
-                offset = table[mid].offset;
-                found = true;
-                break;
-            }
-            if (table[mid].key < key) {
-                l = mid + 1;
-            } else
-                r = mid - 1;
-        }
-        if (!found) count++;
-    }
+    int count = findIndexedKey(key, &offset);
+    bool found = count != -1;
     // calculate coresponding ssTable level and id
     // int back = count;
     int level = 0;
@@ -93,10 +69,9 @@ std::string KVStore::get(uint64_t key) {
         level++;
     }
     int fileId = count;
-    // std::clog << key << " at level: " << level << " id: " << fileId
-    //   << std::endl;
     if (found) {
         // reads value on disk according to offest
+        std::clog << "\t@" << level << "-" << fileId << std::endl;
         return readPair(resolvePath(level, fileId), offset);
     }
     return "";
@@ -113,19 +88,28 @@ std::string KVStore::get(uint64_t key) {
  * If it's not found, the function returns false.
  */
 bool KVStore::del(uint64_t key) {
-    if (verbose) {
-        // std::clog << "remove " << key << "\n";
-        // std::clog << *memTable;
-    }
+    std::clog << "- " << key << std::endl;
+    std::string val = get(key);
+    bool exists = false;
     std::shared_ptr<std::string> strVal(new std::string);
-    if (memTable->remove(key, strVal)) {
+
+    uint64_t offset = 0;
+    // exists in some ssTable
+    if (findIndexedKey(key, &offset) != -1) {
+        if (val != "") {
+            put(key, "");
+            exists = true;
+        }else {
+            exists = false;
+        }
+        // std::clog << "\tindexed" << std::endl;
+    } else if (memTable->remove(key, strVal)) {
         this->memTableSize -= getDataSize((*strVal).length());
-        return true;
-    } else if (get(key) == "") {
-        // add an empty string in ssTable
-        put(key, "");
+        exists = true;
+        std::clog << "\tin mem" << std::endl;
     }
-    return false;
+    if (!exists) std::clog << "x" << std::endl;
+    return exists;
 }
 
 /**
@@ -141,8 +125,7 @@ void KVStore::reset() {
     while (std::filesystem::exists(level)) {
         // std::clog << "remove " << level << std::endl;
         uintmax_t count = std::filesystem::remove_all(level);
-        // std::clog << "removed " << count << " file or directories" <<
-        // std::endl;
+        std::clog << "removed " << count << " file or directories" << std::endl;
         level = resolvePath(++lv);
         // std::clog << level << std::endl;
     }
@@ -154,16 +137,16 @@ void KVStore::reset() {
 }
 
 void KVStore::convertMemTable() {
-    // std::clog << "call convertMemTable, writing to " << this->dir <<
-    // std::endl; if (memTableSize < MEM_TABLE_SIZE_MAX) return; get pointer to
-    // the head of linked list from SkipList. Beware that the last non-nullptr
-    // pointer would be the tail, which contains no meaningful data
+    // get pointer to the head of linked list from SkipList. Beware that the
+    // last non-nullptr pointer would be the tail, which contains no meaningful
+    // data
     std::shared_ptr<typename SkipList<uint64_t, std::string>::Node> p =
         memTable->exportData();
     // while ((p = p->succ) && memTable->valid(p)) std::clog << p->key << "\n";
     std::string lv = resolvePath(0);
-    std::string filename = resolvePath(0, fileNum[0]);
+    std::string filename = resolvePath(0, 0);
     std::filesystem::create_directories(lv);
+    renameLevel(0, 0);
     std::fstream fs(filename, std::ios::out | std::ios::binary);
     // prepares the cache for index data
     std::vector<Index> indexTable;
@@ -193,8 +176,9 @@ void KVStore::convertMemTable() {
     // std::clog << "Meta: offset = " << std::hex << "0x" << offset << std::dec
     //   << std::endl;
     fs.write(reinterpret_cast<char *>(&offset), sizeof(offset));
-    indexTableList.insert(indexTableList.begin() + fileNum[0], indexTable);
+    indexTableList.insert(indexTableList.begin(), indexTable);
     fs.close();
+    renameLevel(0, 1);
     std::clog << "memTable -> " << filename << std::endl;
     // update state
     fileNum[0]++;
@@ -311,6 +295,33 @@ void KVStore::writeEntry(std::fstream &fs, Entry &e) {
     fs.write(e.str.c_str(), e.len);  // write val
 }
 
+int KVStore::findIndexedKey(uint64_t key, uint64_t *offsetDst) const {
+    int count = 0;
+    bool found = false;
+    uint64_t offset = 0;
+    for (auto table : indexTableList) {
+        if (found) break;
+        // binary searches in an index table
+        int l = 0;
+        int r = table.size() - 1;
+        while (l <= r) {
+            int mid = (l + r) / 2;
+            if (table[mid].key == key) {
+                offset = table[mid].offset;
+                found = true;
+                break;
+            }
+            if (table[mid].key < key) {
+                l = mid + 1;
+            } else
+                r = mid - 1;
+        }
+        if (!found) count++;
+    }
+    if (found && offsetDst != nullptr) *offsetDst = offset;
+    return found ? count : -1;
+}
+
 std::string KVStore::resolvePath(int level, int id) const {
     std::filesystem::path lv(resolvePath(level));
     std::string filename = "sstable-" + std::to_string(id);
@@ -418,9 +429,9 @@ void KVStore::compaction(int level) {
         max = std::max({t0Max, t1Max, t2Max});
         // std::clog << "[lv0]compaction range " << min << " " << max <<
         // std::endl;
-        id.push_back(Location(0, 0));
-        id.push_back(Location(0, 1));
         id.push_back(Location(0, 2));
+        id.push_back(Location(0, 1));
+        id.push_back(Location(0, 0));
     } else {
         // selects exceeding files and merges them into next level
         int more = fileNum[level] - levelSizeLim(level);
@@ -457,7 +468,7 @@ void KVStore::compaction(int level) {
     }
     // std::clog << "Merged all data: " << std::endl;
     // for (auto &i : all)
-    // std::clog << "k " << i.key << " v " << std::string(i.val, 0, 50)
+    // std::clog << "\t" << i.key << ":\t" << std::string(i.val, 0, 50)
     // << std::endl;
     // update state: removes indexTable from memory, updates fileNum
     for (int i = (int)id.size() - 1; i >= 0; i--) {
@@ -467,19 +478,10 @@ void KVStore::compaction(int level) {
             std::clog << "error deleting " << resolvePath(id[i]) << std::endl;
     }
     // slice merged data and write to disk
-    // slice all data into id.size() pieces and writes them to disk
     // program state is updated in call to writeSsTable
     uint64_t size = 0;
     std::vector<Pair> tmp;
     if (nextLvPos == -1) nextLvPos = 0;
-    // int newFile = 0;
-    // if (nextLvPos == -1 && fileNum[nextLv] > 0) {
-    //     nextLvPos =
-    //         all.front().key > indexTableList[getIndex(nextLv, 0)].front().key
-    //             ? fileNum[nextLv]
-    //             : 0;
-    // } else
-    //     nextLvPos = 0;
     // renames all file in nextLv to avoid rename hazard
     renameLevel(nextLv, 0);
     for (auto &i : all) {
